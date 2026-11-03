@@ -77,16 +77,27 @@ export default async function POST(req: NextApiRequest, res: NextApiResponse) {
   return res.status(200).json({ received: true });
 }
 
+// Since API version 2025-03-31.basil the billing period lives on subscription
+// items. Fall back to the legacy subscription-level fields for webhook
+// endpoints still pinned to an older API version.
+function getPeriod(sub: Stripe.Subscription) {
+  const legacy = sub as unknown as {
+    current_period_start?: number;
+    current_period_end?: number;
+  };
+  const item = sub.items?.data?.[0];
+  return {
+    current_period_start: (item?.current_period_start ??
+      legacy.current_period_start) as number,
+    current_period_end: (item?.current_period_end ??
+      legacy.current_period_end) as number,
+  };
+}
+
 async function handleSubscriptionUpdated(event: Stripe.Event) {
-  const {
-    cancel_at,
-    id,
-    status,
-    current_period_end,
-    current_period_start,
-    customer,
-    items,
-  } = event.data.object as Stripe.Subscription;
+  const sub = event.data.object as Stripe.Subscription;
+  const { cancel_at, id, status, customer, items } = sub;
+  const { current_period_start, current_period_end } = getPeriod(sub);
 
   const subscription = await getBySubscriptionId(id);
   if (!subscription) {
@@ -114,8 +125,9 @@ async function handleSubscriptionUpdated(event: Stripe.Event) {
 }
 
 async function handleSubscriptionCreated(event: Stripe.Event) {
-  const { customer, id, current_period_start, current_period_end, items } =
-    event.data.object as Stripe.Subscription;
+  const sub = event.data.object as Stripe.Subscription;
+  const { customer, id, items } = sub;
+  const { current_period_start, current_period_end } = getPeriod(sub);
 
   await createStripeSubscription({
     customerId: customer as string,
